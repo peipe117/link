@@ -1,0 +1,851 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    
+    <!-- PWA / Mobile App 設定 -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="theme-color" content="#f8fafc">
+    <meta name="application-name" content="生字連連看">
+    <meta name="apple-mobile-web-app-title" content="生字連連看">
+    
+    <title>生字連連看 - 互動遊戲版</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 只保留楷體供生字顯示使用 -->
+    <link href="https://fonts.googleapis.com/css2?family=Zen+Kai+Mo&display=swap" rel="stylesheet">
+    <!-- 引入彩帶特效庫 -->
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+    <style>
+        /* 字體設定 */
+        .font-kai { font-family: 'Zen Kai Mo', 'KaiTi', 'BiauKai', serif; }
+        
+        /* 禁止選取與觸控縮放，防止下拉更新，模擬 App 體驗 */
+        html, body {
+            overscroll-behavior: none;
+            touch-action: pan-x pan-y;
+            -webkit-overflow-scrolling: touch;
+            height: 100%; /* 確保高度填滿 */
+        }
+        
+        .no-select {
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-touch-callout: none; /* 禁止長按跳出選單 */
+        }
+
+        /* 格子與路徑線條 */
+        .grid-cell {
+            aspect-ratio: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            touch-action: none; /* 格子區域完全禁止瀏覽器預設手勢 */
+        }
+
+        /* 解決列印時背景色消失的問題 */
+        @media print {
+            @page {
+                size: A4 portrait;
+                margin: 0;
+            }
+            body {
+                background: white;
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+                padding: 0;
+                height: auto;
+                overscroll-behavior: auto;
+            }
+            .no-print {
+                display: none !important;
+            }
+            .print-only {
+                display: block !important;
+            }
+            .sheet-container {
+                box-shadow: none !important;
+                border: none !important;
+                width: 100% !important;
+                max-width: 100% !important;
+                margin: 0 !important;
+                padding: 1cm !important;
+                border-radius: 0 !important;
+            }
+            #userPathLayer {
+                display: none; 
+            }
+            #gridContainer {
+                border-color: #000 !important;
+            }
+            .grid-cell {
+                border-color: #888 !important;
+            }
+        }
+        
+        /* 模擬紙張質感 */
+        .paper-texture {
+            background-color: #ffffff;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.05'/%3E%3C/svg%3E");
+        }
+
+        /* SVG 層級管理 */
+        .layer-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+        
+        svg.path-layer {
+            width: 100%;
+            height: 100%;
+        }
+
+        /* 文字層級要在線條之上 */
+        .cell-content {
+            z-index: 20;
+            background: white;
+            border-radius: 50%;
+            width: 80%;
+            height: 80%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            border: 2px solid #333;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        
+        /* 遊戲互動效果 */
+        .cell-content.active {
+            transform: scale(1.1);
+            box-shadow: 0 0 15px rgba(99, 102, 241, 0.4);
+        }
+        
+        .cell-content.solved {
+            background-color: #ecfdf5; 
+            border-color: #10b981;
+            color: #065f46 !important;
+            transform: scale(1.05);
+            animation: none !important; /* 完成後停止跳動 */
+        }
+
+        /* 未完成的字會有呼吸燈/跳動效果 */
+        .cell-content.unsolved {
+            animation: gentle-bounce 2s infinite;
+        }
+
+        @keyframes gentle-bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-3%); }
+        }
+
+        /* 慶祝動畫 */
+        @keyframes pop {
+            0% { transform: scale(0.8); opacity: 0; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        .animate-pop {
+            animation: pop 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+        }
+    </style>
+</head>
+<!-- 使用 min-h-[100dvh] 確保在行動裝置瀏覽器上滿版顯示 -->
+<body class="bg-slate-50 min-h-[100dvh] text-slate-800 font-sans flex flex-col items-center pt-6 pb-12 relative overflow-x-hidden no-select">
+
+    <!-- 背景裝飾 -->
+    <div class="fixed inset-0 z-0 pointer-events-none no-print overflow-hidden">
+        <div class="absolute -top-[10%] -left-[10%] w-[40%] h-[40%] bg-indigo-200/20 rounded-full blur-3xl"></div>
+        <div class="absolute top-[20%] -right-[10%] w-[30%] h-[30%] bg-emerald-200/20 rounded-full blur-3xl"></div>
+    </div>
+
+    <!-- 設定 Modal -->
+    <div id="settingsModal" class="fixed inset-0 z-50 hidden no-print" aria-labelledby="modal-title" role="dialog" aria-modal="true">
+        <div class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm transition-opacity opacity-0" id="modalBackdrop" onclick="toggleSettings()"></div>
+        <div class="fixed inset-0 z-10 overflow-y-auto">
+            <div class="flex min-h-full items-center justify-center p-4 text-center">
+                <div id="modalContent" class="relative transform overflow-hidden rounded-2xl bg-white text-left shadow-2xl transition-all scale-95 opacity-0 sm:w-full sm:max-w-lg border border-white/50">
+                    <div class="bg-gradient-to-r from-indigo-50 to-white px-6 py-4 flex justify-between items-center border-b border-indigo-50">
+                        <h3 class="text-lg font-bold leading-6 text-indigo-900 flex items-center gap-2">
+                            <span class="bg-indigo-100 p-1.5 rounded-lg">⚙️</span> 題目設定
+                        </h3>
+                        <button onclick="toggleSettings()" class="text-slate-400 hover:text-slate-600 transition p-1 rounded-full hover:bg-slate-100">
+                            <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="px-6 py-6 space-y-5 bg-white">
+                        <div>
+                            <label class="block text-sm font-bold text-slate-700 mb-2 flex justify-between">
+                                <span>輸入生字 (逗號分隔)</span>
+                                <span id="wordCountSuggestion" class="text-xs font-normal text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full transition-all">建議 6-9 字</span>
+                            </label>
+                            <textarea id="wordsInput" rows="3" 
+                                class="w-full p-4 border-2 border-slate-200 rounded-xl focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 focus:outline-none transition text-xl shadow-sm tracking-wide resize-none text-slate-700 placeholder:text-slate-300 font-sans"
+                                placeholder="山,水,日,月,火,木">山,水,日,月,火,木,天,地</textarea>
+                        </div>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm font-bold text-slate-700 mb-2">格子大小</label>
+                                <div class="relative">
+                                    <select id="gridSize" class="appearance-none w-full p-3 border-2 border-slate-200 rounded-xl text-sm font-bold bg-white text-slate-700 focus:border-indigo-500 focus:outline-none focus:ring-4 focus:ring-indigo-500/10 transition">
+                                        <option value="5">5 x 5 (簡單)</option>
+                                        <option value="6">6 x 6 (中等)</option>
+                                        <option value="7">7 x 7 (挑戰)</option>
+                                        <option value="8" selected>8 x 8 (困難)</option>
+                                        <option value="9">9 x 9 (專家)</option>
+                                        <option value="10">10 x 10 (極限)</option>
+                                    </select>
+                                    <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-slate-500">
+                                        <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                                    </div>
+                                </div>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-bold text-slate-700 mb-2">標題</label>
+                                <input type="text" id="sheetTitle" value="生字連連看" class="w-full p-3 border-2 border-slate-200 rounded-xl text-sm font-bold text-slate-700 focus:border-indigo-500 focus:outline-none focus:ring-4 focus:ring-indigo-500/10 transition">
+                            </div>
+                        </div>
+                        <div class="flex items-center p-4 bg-slate-50 rounded-xl border border-slate-100 hover:border-slate-200 transition">
+                            <input type="checkbox" id="showSolution" class="w-5 h-5 accent-indigo-600 rounded cursor-pointer border-gray-300 focus:ring-indigo-500">
+                            <label for="showSolution" class="ml-3 flex flex-col cursor-pointer select-none">
+                                <span class="text-sm font-bold text-slate-700">顯示解答線</span>
+                                <span class="text-xs text-slate-500">列印給學生的時候記得關掉喔！</span>
+                            </label>
+                        </div>
+                        <div id="statusMsg" class="text-center text-sm font-bold text-rose-500 min-h-[20px] transition-all duration-300"></div>
+                    </div>
+                    <div class="bg-slate-50 px-6 py-4 flex gap-3 border-t border-slate-100">
+                         <button onclick="toggleSettings()" 
+                            class="flex-1 rounded-xl bg-white px-4 py-3 text-sm font-bold text-slate-600 shadow-sm ring-1 ring-inset ring-slate-300 hover:bg-slate-50 transition">
+                            取消
+                        </button>
+                        <button onclick="handleGenerate()" 
+                            class="flex-1 rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white shadow-md hover:bg-indigo-500 hover:shadow-lg transition transform active:scale-95">
+                            套用並生成
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 主畫面內容 -->
+    <div class="w-full max-w-5xl flex flex-col items-center px-2 sm:px-4 z-10 flex-grow justify-center">
+        
+        <!-- 遊戲/列印區 -->
+        <div class="flex justify-center w-full">
+            <div id="printArea" class="sheet-container bg-white p-4 sm:p-8 md:p-12 shadow-2xl rounded-xl relative paper-texture w-full max-w-[21cm] md:aspect-[1/1.414] md:min-h-[29.7cm] flex flex-col select-none border border-slate-200/60">
+                
+                <!-- 學習單頭部 -->
+                <div class="border-b-2 border-slate-800 pb-4 mb-2 relative">
+                    <!-- 標題與說明 -->
+                    <div class="flex flex-col items-center justify-center px-2 sm:px-16 text-center">
+                        <h1 id="displayTitle" class="text-3xl sm:text-5xl font-bold text-slate-800 tracking-widest mb-2">生字連連看</h1>
+                        
+                        <p class="text-slate-600 text-base sm:text-lg flex flex-wrap justify-center items-center gap-2 font-medium">
+                            請拖曳連線相同的生字，線條不能交叉！
+                            <span class="print-only:hidden text-indigo-600 text-sm sm:text-base font-bold bg-indigo-50 px-2 py-0.5 rounded-full shadow-sm border border-indigo-100 cursor-help" title="點擊格子內的字會發音喔">(點擊生字可聽發音 🔊)</span>
+                        </p>
+                    </div>
+
+                    <!-- 功能圖示區 -->
+                    <div class="absolute top-0 right-0 h-full flex items-start gap-2 no-print">
+                        <!-- (i) 英文說明 -->
+                        <div class="relative group">
+                            <button class="flex items-center justify-center w-10 h-10 bg-slate-50 text-slate-500 rounded-full border border-slate-200 hover:bg-sky-50 hover:text-sky-600 hover:border-sky-200 transition-all" title="English Info">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <circle cx="12" cy="12" r="10"></circle>
+                                    <path d="M12 16v-4"></path>
+                                    <path d="M12 8h.01"></path>
+                                </svg>
+                            </button>
+                            <div class="absolute right-0 top-full mt-2 w-64 bg-white border border-slate-200 p-4 rounded-xl shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50 text-left transform origin-top-right scale-95 group-hover:scale-100">
+                                <p class="text-slate-800 text-sm font-bold mb-2 border-b border-slate-100 pb-1">Instructions</p>
+                                <p class="text-slate-500 text-xs leading-relaxed">
+                                    Drag to connect matching characters without crossing lines!
+                                </p>
+                                <p class="text-indigo-500 text-xs mt-2 flex items-center gap-1 font-medium bg-indigo-50 p-1.5 rounded-lg">
+                                    <span>🔊</span> Click character for pronunciation
+                                </p>
+                            </div>
+                        </div>
+
+                        <!-- 列印按鈕 -->
+                        <button onclick="window.print()" class="group relative flex items-center justify-center w-10 h-10 bg-slate-50 text-slate-500 rounded-full border border-slate-200 hover:bg-emerald-50 hover:text-emerald-600 hover:border-emerald-200 transition-all" title="列印">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="6 9 6 2 18 2 18 9"></polyline>
+                                <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path>
+                                <rect x="6" y="14" width="12" height="8"></rect>
+                            </svg>
+                        </button>
+
+                        <!-- 設定按鈕 -->
+                        <button onclick="toggleSettings()" class="group relative flex items-center justify-center w-10 h-10 bg-slate-50 text-slate-500 rounded-full border border-slate-200 hover:bg-indigo-50 hover:text-indigo-600 hover:border-indigo-200 transition-all" title="設定">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="transition-transform duration-500 group-hover:rotate-90">
+                                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.47a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
+                                <circle cx="12" cy="12" r="3"></circle>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 遊戲控制按鈕 -->
+                <div class="w-full flex justify-center mb-4 no-print relative z-30">
+                     <div class="bg-slate-50 p-1 rounded-lg flex gap-1 shadow-sm border border-slate-200">
+                        <button onclick="resetGameProgress()" class="flex items-center gap-1 px-3 py-1.5 rounded-md text-sm font-bold text-slate-600 hover:bg-white hover:text-indigo-600 hover:shadow-sm transition" title="重新開始本題">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                            重玩
+                        </button>
+                        <div class="w-px bg-slate-300 my-1"></div>
+                        <button onclick="generatePuzzle()" class="flex items-center gap-1 px-3 py-1.5 rounded-md text-sm font-bold text-indigo-600 hover:bg-white hover:shadow-sm transition" title="生成新題目">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                            換一題
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 遊戲區域 Wrapper -->
+                <div class="flex-grow flex flex-col items-center justify-start relative w-full h-full">
+                    
+                    <!-- 勝利訊息遮罩 -->
+                    <div id="winMessage" class="hidden absolute z-50 inset-0 flex items-center justify-center bg-white/60 backdrop-blur-[2px] rounded-xl animate-pop">
+                        <div class="bg-white p-8 rounded-3xl shadow-[0_20px_50px_rgba(0,0,0,0.15)] border border-slate-100 text-center transform scale-110">
+                            <div class="text-7xl mb-4 animate-bounce">🎉</div>
+                            <h2 class="text-3xl font-bold text-slate-800 mb-2 font-sans">太棒了！</h2>
+                            <p class="text-slate-500 font-bold text-lg mb-8">你完成了所有連線！</p>
+                            <button onclick="generatePuzzle(); document.getElementById('winMessage').classList.add('hidden');" class="bg-indigo-600 text-white px-8 py-3 rounded-xl font-bold hover:bg-indigo-700 shadow-lg hover:shadow-indigo-500/30 transition transform hover:-translate-y-1">
+                                下一關
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="relative max-w-[640px] w-full aspect-square">
+                        <!-- 解答線條層 -->
+                        <div id="solutionLayer" class="layer-container z-0 opacity-40 mix-blend-multiply"></div>
+                        <!-- 玩家線條層 -->
+                        <div id="userPathContainer" class="layer-container z-10">
+                             <svg id="userPathSvg" class="path-layer" style="filter: drop-shadow(0px 4px 3px rgba(0,0,0,0.07));"></svg>
+                        </div>
+                        <!-- 格子互動層 -->
+                        <div id="gridContainer" class="grid border-[3px] border-slate-700 bg-transparent z-20 relative w-full h-full no-select touch-none rounded-sm overflow-hidden shadow-sm"></div>
+                    </div>
+                </div>
+
+                <!-- 學習單底部 -->
+                <div class="mt-8 pt-4 border-t border-slate-200 flex justify-between text-slate-400 text-sm">
+                    <span>加油！你可以的！</span>
+                    <span>Design by Sophia Wong</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- 設定與變數 ---
+        const COLORS = [
+            '#EF4444', '#F97316', '#F59E0B', '#84CC16', '#10B981', 
+            '#06B6D4', '#3B82F6', '#6366F1', '#8B5CF6', '#EC4899', '#64748B'
+        ];
+
+        // 遊戲狀態
+        let gameState = {
+            size: 8,
+            words: [],
+            endpoints: {}, 
+            paths: {}, 
+            generatedSolution: null,
+            isDragging: false,
+            currentWord: null,
+            currentPath: []
+        };
+
+        // --- 音效功能 (AudioContext) ---
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        
+        function playSound(type) {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const osc = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+            
+            osc.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+            
+            if (type === 'connect') {
+                // 連線成功：清脆的高音
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(500, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(1000, audioCtx.currentTime + 0.1);
+                gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.1);
+            } else if (type === 'win') {
+                // 過關：簡單的和弦
+                playNote(523.25, 0); // C5
+                playNote(659.25, 0.1); // E5
+                playNote(783.99, 0.2); // G5
+                playNote(1046.50, 0.4); // C6
+            }
+        }
+
+        function playNote(freq, delay) {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.type = 'triangle';
+            osc.frequency.value = freq;
+            gain.gain.setValueAtTime(0, audioCtx.currentTime + delay);
+            gain.gain.linearRampToValueAtTime(0.2, audioCtx.currentTime + delay + 0.05);
+            gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + delay + 0.5);
+            osc.start(audioCtx.currentTime + delay);
+            osc.stop(audioCtx.currentTime + delay + 0.5);
+        }
+
+        // --- UI 控制 ---
+        function toggleSettings() {
+            const modal = document.getElementById('settingsModal');
+            const backdrop = document.getElementById('modalBackdrop');
+            const content = document.getElementById('modalContent');
+            const statusMsg = document.getElementById('statusMsg');
+            
+            if (modal.classList.contains('hidden')) {
+                statusMsg.textContent = "";
+                modal.classList.remove('hidden');
+                setTimeout(() => {
+                    backdrop.classList.remove('opacity-0');
+                    content.classList.remove('scale-95', 'opacity-0');
+                    content.classList.add('scale-100', 'opacity-100');
+                }, 10);
+            } else {
+                backdrop.classList.add('opacity-0');
+                content.classList.add('scale-95', 'opacity-0');
+                content.classList.remove('scale-100', 'opacity-100');
+                setTimeout(() => {
+                    modal.classList.add('hidden');
+                }, 200);
+            }
+        }
+
+        function handleGenerate() {
+            document.getElementById('statusMsg').textContent = "";
+            setTimeout(() => {
+                if (generatePuzzle()) {
+                    toggleSettings();
+                }
+            }, 50);
+        }
+
+        // --- 語音功能 ---
+        let voices = [];
+        function loadVoices() {
+            if ('speechSynthesis' in window) {
+                voices = window.speechSynthesis.getVoices();
+            }
+        }
+        if ('speechSynthesis' in window) {
+            window.speechSynthesis.onvoiceschanged = loadVoices;
+            loadVoices(); 
+        }
+
+        function speak(text) {
+            if (!('speechSynthesis' in window)) return;
+            window.speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(text);
+            if (voices.length === 0) voices = window.speechSynthesis.getVoices();
+            const zhVoice = voices.find(v => v.lang.includes('zh-TW')) || 
+                           voices.find(v => v.lang.includes('zh-CN')) || 
+                           voices.find(v => v.lang.includes('zh'));
+            if (zhVoice) utterance.voice = zhVoice;
+            utterance.lang = 'zh-TW'; 
+            utterance.rate = 0.8;     
+            utterance.volume = 1.0;
+            window.speechSynthesis.speak(utterance);
+        }
+
+        // --- 核心邏輯 ---
+        // 動態建議字數
+        const gridSizeSelect = document.getElementById('gridSize');
+        const suggestionSpan = document.getElementById('wordCountSuggestion');
+        gridSizeSelect.addEventListener('change', () => {
+            const size = parseInt(gridSizeSelect.value);
+            let text = "";
+            switch(size) {
+                case 5: text = "建議 3-5 字"; break;
+                case 6: text = "建議 4-6 字"; break;
+                case 7: text = "建議 5-8 字"; break;
+                case 8: text = "建議 6-9 字"; break;
+                case 9: text = "建議 7-10 字"; break;
+                case 10: text = "建議 8-12 字"; break;
+                default: text = "建議 4-8 字";
+            }
+            suggestionSpan.textContent = text;
+            suggestionSpan.className = "text-xs font-normal text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full transition-all";
+            setTimeout(() => {
+                suggestionSpan.className = "text-xs font-normal text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full transition-all";
+            }, 300);
+        });
+
+        function generatePuzzle() {
+            document.getElementById('winMessage').classList.add('hidden');
+            const statusMsg = document.getElementById('statusMsg');
+            const wordsInput = document.getElementById('wordsInput').value;
+            const size = parseInt(document.getElementById('gridSize').value);
+            const title = document.getElementById('sheetTitle').value;
+            const showSolution = document.getElementById('showSolution').checked;
+
+            document.getElementById('displayTitle').textContent = title || "生字連連看";
+
+            let words = wordsInput.split(/[,，\s]+/).filter(w => w.trim() !== "");
+            words = [...new Set(words)]; 
+
+            if (words.length < 2) {
+                statusMsg.textContent = "請至少輸入 2 個不同的生字！";
+                return false;
+            }
+
+            let bestResult = null;
+            for (let i = 0; i < 1000; i++) {
+                const result = tryCreatePath(size, words);
+                if (result) {
+                    bestResult = result;
+                    break;
+                }
+            }
+
+            if (!bestResult) {
+                statusMsg.textContent = `生成失敗！「${size}x${size}」格子太小，塞不下 ${words.length} 個字。`;
+                return false;
+            }
+
+            gameState.size = size;
+            gameState.words = words;
+            gameState.generatedSolution = bestResult;
+            gameState.paths = {}; 
+            gameState.endpoints = {};
+            gameState.isDragging = false;
+            gameState.currentPath = [];
+            gameState.currentWord = null;
+
+            words.forEach((w, idx) => {
+                const path = bestResult.paths[w];
+                const start = path[0];
+                const end = path[path.length - 1];
+                const colorIdx = idx % COLORS.length;
+                gameState.endpoints[`${start.r},${start.c}`] = { word: w, colorIdx, isStart: true };
+                gameState.endpoints[`${end.r},${end.c}`] = { word: w, colorIdx, isStart: false };
+            });
+
+            renderGrid(showSolution);
+            return true;
+        }
+
+        function resetGameProgress() {
+            gameState.paths = {};
+            gameState.currentPath = [];
+            gameState.isDragging = false;
+            gameState.currentWord = null;
+            document.getElementById('winMessage').classList.add('hidden');
+            renderGrid(document.getElementById('showSolution').checked);
+        }
+
+        function tryCreatePath(size, words) {
+            let grid = Array(size).fill().map(() => Array(size).fill(null));
+            let paths = {};
+            let shuffledWords = [...words].sort(() => Math.random() - 0.5);
+
+            for (let word of shuffledWords) {
+                let emptyCells = [];
+                for (let r = 0; r < size; r++) {
+                    for (let c = 0; c < size; c++) {
+                        if (grid[r][c] === null) emptyCells.push({r, c});
+                    }
+                }
+                if (emptyCells.length === 0) return null;
+
+                let start = emptyCells[Math.floor(Math.random() * emptyCells.length)];
+                let path = [start];
+                let current = start;
+                let tempGrid = grid.map(row => [...row]);
+                tempGrid[current.r][current.c] = 'USED';
+
+                let targetLength = 3 + Math.floor(Math.random() * (size * 1.5)); 
+                for (let step = 0; step < targetLength; step++) {
+                    let moves = [{r: current.r+1, c: current.c}, {r: current.r-1, c: current.c}, {r: current.r, c: current.c+1}, {r: current.r, c: current.c-1}];
+                    moves.sort(() => Math.random() - 0.5);
+                    let moved = false;
+                    for (let m of moves) {
+                        if (m.r >= 0 && m.r < size && m.c >= 0 && m.c < size && tempGrid[m.r][m.c] === null) {
+                            current = m;
+                            path.push(current);
+                            tempGrid[current.r][current.c] = 'USED';
+                            moved = true;
+                            break;
+                        }
+                    }
+                    if (!moved) break;
+                }
+                if (path.length >= 3) {
+                    path.forEach(p => grid[p.r][p.c] = word);
+                    paths[word] = path;
+                } else {
+                    return null;
+                }
+            }
+            return { grid, paths };
+        }
+
+        function renderGrid(showSolution) {
+            const container = document.getElementById('gridContainer');
+            const solutionLayer = document.getElementById('solutionLayer');
+            
+            container.innerHTML = '';
+            solutionLayer.innerHTML = '';
+            container.style.gridTemplateColumns = `repeat(${gameState.size}, 1fr)`;
+
+            for (let r = 0; r < gameState.size; r++) {
+                for (let c = 0; c < gameState.size; c++) {
+                    const cell = document.createElement('div');
+                    cell.className = 'grid-cell border border-slate-300/80';
+                    cell.dataset.r = r;
+                    cell.dataset.c = c;
+                    
+                    const key = `${r},${c}`;
+                    if (gameState.endpoints[key]) {
+                        const ep = gameState.endpoints[key];
+                        const circle = document.createElement('div');
+                        // 預設加上 unsolved class 讓它跳動
+                        let baseClass = 'cell-content text-xl md:text-3xl font-bold font-kai select-none pointer-events-none unsolved';
+                        
+                        // 檢查是否已完成連線
+                        if (gameState.paths[ep.word]) {
+                            baseClass = 'cell-content text-xl md:text-3xl font-bold font-kai select-none pointer-events-none solved';
+                        }
+                        circle.className = baseClass;
+                        circle.style.borderColor = COLORS[ep.colorIdx];
+                        circle.style.color = '#333';
+                        circle.innerText = ep.word;
+                        cell.appendChild(circle);
+                    }
+                    attachEvents(cell);
+                    container.appendChild(cell);
+                }
+            }
+
+            if (showSolution) {
+                renderPathsSVG(gameState.generatedSolution.paths, solutionLayer, 0.6, true);
+            }
+            updateUserPathSVG();
+        }
+
+        function renderPathsSVG(pathsData, targetSvgContainer, opacity, isDashed) {
+            const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+            svg.setAttribute("class", "path-layer");
+            svg.setAttribute("viewBox", `0 0 ${gameState.size} ${gameState.size}`);
+            svg.setAttribute("preserveAspectRatio", "none");
+
+            Object.keys(pathsData).forEach((word) => {
+                const wordIdx = gameState.words.indexOf(word);
+                const color = COLORS[wordIdx % COLORS.length];
+                const pathArr = pathsData[word];
+                const points = pathArr.map(p => `${p.c + 0.5},${p.r + 0.5}`).join(" ");
+                const polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+                polyline.setAttribute("points", points);
+                polyline.setAttribute("fill", "none");
+                polyline.setAttribute("stroke", color);
+                polyline.setAttribute("stroke-width", "0.25"); 
+                polyline.setAttribute("stroke-linecap", "round");
+                polyline.setAttribute("stroke-linejoin", "round");
+                polyline.setAttribute("opacity", opacity);
+                if (isDashed) polyline.setAttribute("stroke-dasharray", "0.1, 0.3");
+                svg.appendChild(polyline);
+            });
+            targetSvgContainer.innerHTML = '';
+            targetSvgContainer.appendChild(svg);
+        }
+
+        function updateUserPathSVG() {
+            const svg = document.getElementById('userPathSvg');
+            svg.setAttribute("viewBox", `0 0 ${gameState.size} ${gameState.size}`);
+            svg.innerHTML = ''; 
+
+            Object.keys(gameState.paths).forEach(word => {
+                 const wordIdx = gameState.words.indexOf(word);
+                 drawPolyline(svg, gameState.paths[word], COLORS[wordIdx % COLORS.length], false);
+            });
+
+            if (gameState.currentPath.length > 0 && gameState.currentWord) {
+                const wordIdx = gameState.words.indexOf(gameState.currentWord);
+                drawPolyline(svg, gameState.currentPath, COLORS[wordIdx % COLORS.length], true);
+            }
+        }
+
+        function drawPolyline(svg, pathArr, color, isDragging) {
+            if (pathArr.length < 1) return;
+            const points = pathArr.map(p => `${p.c + 0.5},${p.r + 0.5}`).join(" ");
+            const polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+            polyline.setAttribute("points", points);
+            polyline.setAttribute("fill", "none");
+            polyline.setAttribute("stroke", color);
+            polyline.setAttribute("stroke-width", isDragging ? "0.35" : "0.3");
+            polyline.setAttribute("stroke-linecap", "round");
+            polyline.setAttribute("stroke-linejoin", "round");
+            if(isDragging) polyline.setAttribute("opacity", "0.8");
+            svg.appendChild(polyline);
+        }
+
+        // --- 事件監聽 ---
+        function attachEvents(cell) {
+            cell.addEventListener('mousedown', handleInputStart);
+            cell.addEventListener('mouseenter', handleInputMove);
+            cell.addEventListener('mouseup', handleInputEnd);
+            cell.addEventListener('touchstart', (e) => { e.preventDefault(); handleInputStart(e); }, {passive: false});
+        }
+        
+        const gridContainer = document.getElementById('gridContainer');
+        gridContainer.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            const touch = e.touches[0];
+            const target = document.elementFromPoint(touch.clientX, touch.clientY);
+            if (target && target.classList.contains('grid-cell')) {
+                handleInputMove({ target: target, preventDefault: () => {} });
+            }
+        }, {passive: false});
+
+        gridContainer.addEventListener('touchend', (e) => { handleInputEnd(e); });
+        
+        document.body.addEventListener('mouseup', () => {
+            if(gameState.isDragging) {
+                gameState.isDragging = false;
+                gameState.currentPath = [];
+                updateUserPathSVG();
+            }
+        });
+
+        function handleInputStart(e) {
+            const cell = e.target.closest('.grid-cell');
+            if (!cell) return;
+            const r = parseInt(cell.dataset.r);
+            const c = parseInt(cell.dataset.c);
+            const key = `${r},${c}`;
+            
+            if (gameState.endpoints[key]) {
+                const ep = gameState.endpoints[key];
+                gameState.isDragging = true;
+                gameState.currentWord = ep.word;
+                gameState.currentPath = [{r, c}];
+                if (gameState.paths[ep.word]) {
+                    delete gameState.paths[ep.word];
+                    renderGrid(document.getElementById('showSolution').checked); 
+                }
+                updateUserPathSVG();
+            }
+        }
+
+        function handleInputMove(e) {
+            if (!gameState.isDragging) return;
+            const cell = e.target.closest('.grid-cell');
+            if (!cell) return;
+            const r = parseInt(cell.dataset.r);
+            const c = parseInt(cell.dataset.c);
+            const path = gameState.currentPath;
+            const lastPos = path[path.length - 1];
+            
+            if (r === lastPos.r && c === lastPos.c) return;
+            const dist = Math.abs(r - lastPos.r) + Math.abs(c - lastPos.c);
+            if (dist !== 1) return;
+
+            // 悔棋 logic
+            if (path.length > 1) {
+                const prevPos = path[path.length - 2];
+                if (r === prevPos.r && c === prevPos.c) {
+                    path.pop();
+                    updateUserPathSVG();
+                    return;
+                }
+            }
+            
+            const inSelf = path.some(p => p.r === r && p.c === c);
+            if (inSelf) return;
+            
+            Object.keys(gameState.paths).forEach(w => {
+                if (w === gameState.currentWord) return;
+                const otherPath = gameState.paths[w];
+                const collisionIdx = otherPath.findIndex(p => p.r === r && p.c === c);
+                if (collisionIdx !== -1) delete gameState.paths[w];
+            });
+
+            path.push({r, c});
+            updateUserPathSVG();
+        }
+
+        function handleInputEnd(e) {
+            if (!gameState.isDragging) return;
+            const path = gameState.currentPath;
+            const lastPos = path[path.length - 1];
+            const key = `${lastPos.r},${lastPos.c}`;
+            
+            if (path.length === 1) {
+                speak(gameState.currentWord);
+            }
+
+            let success = false;
+            if (gameState.endpoints[key]) {
+                const ep = gameState.endpoints[key];
+                if (ep.word === gameState.currentWord && path.length > 1) {
+                    success = true;
+                }
+            }
+            
+            if (success) {
+                gameState.paths[gameState.currentWord] = [...gameState.currentPath];
+                playSound('connect');
+                checkWin();
+            }
+            
+            gameState.isDragging = false;
+            gameState.currentPath = [];
+            gameState.currentWord = null;
+            renderGrid(document.getElementById('showSolution').checked);
+        }
+        
+        function checkWin() {
+            const allWords = gameState.words;
+            const solvedWords = Object.keys(gameState.paths);
+            
+            if (solvedWords.length === allWords.length) {
+                playSound('win');
+                confetti({
+                    particleCount: 150,
+                    spread: 70,
+                    origin: { y: 0.6 }
+                });
+                setTimeout(() => {
+                    const winMsg = document.getElementById('winMessage');
+                    winMsg.classList.remove('hidden');
+                }, 300);
+            }
+        }
+
+        document.getElementById('showSolution').addEventListener('change', function() {
+            renderGrid(this.checked);
+        });
+
+        // 初始化建議文字
+        const evt = new Event('change');
+        gridSizeSelect.dispatchEvent(evt);
+        generatePuzzle();
+
+    </script>
+</body>
+</html>
